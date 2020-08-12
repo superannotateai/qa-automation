@@ -1,2 +1,3 @@
 # qa-automation
-QA Automation
+Tutorials to be posted soon
+
