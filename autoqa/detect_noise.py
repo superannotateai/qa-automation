@@ -58,11 +58,20 @@ def match_gt_to_pred(gt_boxes, pred_boxes, iou_thresh):
 
     match_quality_matrix = pairwise_iou(gt_boxes, pred_boxes)
     matched_vals, matches = match_quality_matrix.max(dim=1)
-    valid_gt_ids = matched_vals > iou_thresh
+    valid_gt_ids = matched_vals > iou_thresh 
     matched_gt_ids = np.where(valid_gt_ids)[0]
     matched_pred_ids = matches[valid_gt_ids]
     
     return matched_gt_ids, matched_pred_ids
+
+def match_pred_to_gt(gt_boxes, pred_boxes, iou_thresh):
+
+    match_quality_matrix = pairwise_iou(pred_boxes, gt_boxes)
+    matched_vals, matches = match_quality_matrix.max(dim=1)
+    valid_pred_ids = matched_vals < iou_thresh
+    matched_pred_ids = np.where(valid_pred_ids)[0]
+        
+    return matched_pred_ids
 
 def label_mismatch_score(gt_one_hot, pred_softmax):
     return torch.norm(pred_softmax - gt_one_hot).pow(2)/2
@@ -116,7 +125,7 @@ def detect_mislabeled_annotations(dataset_name, cfg, mismatch_thresh = 0.4, augm
     total_compute_time = 0
 
 
-    for inputs in data_loader:
+    for idx, inputs in enumerate(data_loader):
         
         if idx == num_warmup:
             start_time = time.perf_counter()
@@ -242,3 +251,120 @@ def eval_mislabel_detection(dataset_name, cfg, mismatch_thresh = 0.4, augment =F
         )
     )
     return recall.item(), precision.item(), qa.item()
+
+def detect_missing_annotations_per_image(inputs, model, upper_iou_thresh = 0.2, lower_iou_thresh = 0.4):
+    gt_boxes, gt_classes, _ = get_gt_data(inputs[0])
+
+    with torch.no_grad():
+        outputs = model(inputs)
+
+    pred_boxes, pred_scores = get_pred_data(outputs[0])
+    if len(pred_boxes) == 0 or len(gt_boxes) == 0:
+        return torch.tensor([]), torch.tensor([]), torch.tensor([])
+
+    matched_pred_ids = match_pred_to_gt(gt_boxes, pred_boxes, upper_iou_thresh)
+    missed_boxes = pred_boxes[matched_pred_ids]
+    missed_scores = pred_scores[matched_pred_ids, :]
+    
+   
+    if len(missed_boxes) == 0:
+        return torch.tensor([]), torch.tensor([]), torch.tensor([])
+
+    missed_class_ids = torch.argmax(missed_scores, dim = 1)
+    aug_inputs = add_augmentations(inputs[0])[1:]
+    with torch.no_grad():
+        aug_outputs = model(aug_inputs)
+    
+    miss_label_scores = torch.ones((len(missed_boxes), len(aug_inputs)))
+ 
+    for aug_idx, predictions in enumerate(aug_outputs):
+        aug_pred_boxes, aug_pred_scores = get_pred_data(predictions)
+       
+        if len(aug_pred_boxes) == 0:
+            continue
+
+        matched_miss_ids, matched_aug_pred_ids = match_gt_to_pred(missed_boxes, aug_pred_boxes, lower_iou_thresh)
+       
+        for miss_idx, aug_pred_idx in zip(matched_miss_ids, matched_aug_pred_ids):
+            miss_softmax = missed_scores[miss_idx, :].to("cpu")
+            aug_pred_softmax = aug_pred_scores[aug_pred_idx, :].to("cpu")
+          
+            miss_label_scores[miss_idx, aug_idx] = label_mismatch_score(miss_softmax, aug_pred_softmax)
+  
+    label_scores, _ = torch.min(miss_label_scores, dim = 1)
+    return label_scores, missed_boxes, missed_class_ids
+
+
+def detect_missing_annotations(dataset_name, cfg, skip_thresh = 0.1):
+    
+    class_names = MetadataCatalog.get(dataset_name).thing_classes
+    ao_json_dir = ao_setup_project_dir(dataset_name, class_names)
+    
+    data_loader = build_test_loader(cfg, dataset_name)
+    model = build_model(cfg)
+    DetectionCheckpointer(model).load(cfg.MODEL.WEIGHTS)
+    model.eval()
+
+    n = len(data_loader)
+    num_devices = get_world_size()
+    logger = logging.getLogger(__name__)
+    logger.info(
+        "Start skipped annotation detection on {} images".format(n)
+    )
+    
+    num_warmup = min(5, n - 1)
+    start_time = time.perf_counter()
+    total_compute_time = 0
+
+
+    for idx, inputs in enumerate(data_loader):
+        
+        if idx == num_warmup:
+            start_time = time.perf_counter()
+            total_compute_time = 0
+
+        start_compute_time = time.perf_counter()
+       
+        missed_label_scores, missed_boxes, missed_classes = detect_missing_annotations_per_image(inputs, model)
+        if len(missed_boxes) == 0:
+            continue
+
+        skip_ids = missed_label_scores < skip_thresh
+        skip_boxes = missed_boxes[skip_ids]
+        skip_classes = missed_classes[skip_ids]
+
+        skip_class_info = [(class_id.item(), class_names[class_id]) for class_id in skip_classes]
+        ao_format_annotations(inputs[0]['image_id'], ao_json_dir, skip_boxes, skip_class_info, torch.ones(len(skip_boxes), dtype = torch.bool))
+       
+        total_compute_time += time.perf_counter() - start_compute_time
+        iters_after_start = idx + 1 - num_warmup * int(idx >= num_warmup)
+        seconds_per_img = total_compute_time / iters_after_start
+        if idx >= num_warmup * 2 or seconds_per_img > 5:
+            total_seconds_per_img = (
+                time.perf_counter() - start_time
+            ) / iters_after_start
+            eta = datetime.timedelta(
+                seconds=int(total_seconds_per_img * (n - idx - 1))
+            )
+            log_every_n_seconds(
+                logging.INFO,
+                "Proessed {}/{}. {:.4f} s / img. ETA={}".format(
+                    idx + 1, n, seconds_per_img, str(eta)
+                ),
+                n=5,
+            )
+    # Measure the time only for this worker (before the synchronization barrier)
+    total_time = time.perf_counter() - start_time
+    total_time_str = str(datetime.timedelta(seconds=total_time))
+    
+    logger.info(
+        "Total skip detection time: {} ({:.6f} s / img per device, on {} devices)".format(
+            total_time_str, total_time / (n - num_warmup), num_devices
+        )
+    )
+    total_compute_time_str = str(datetime.timedelta(seconds=int(total_compute_time)))
+    logger.info(
+        "Total skip detection pure compute time: {} ({:.6f} s / img per device, on {} devices)".format(
+            total_compute_time_str, total_compute_time / (n - num_warmup), num_devices
+        )
+    )

@@ -24,6 +24,7 @@ def ao_setup_project_dir(dirname, classes):
 
     ann_dir = os.path.join(dirname, "jsons")
     os.makedirs(ann_dir, exist_ok = True)
+
     return ann_dir
   
 
@@ -44,8 +45,13 @@ def ao_format_annotations(image_id, ao_json_dir, boxes, classes, mislabeled):
         if isMislabeled:
             instance["error"] = True
         instances.append(instance)
-    anndata = json.dumps(instances)
-
+   
     annpath = os.path.join(ao_json_dir, "{}.jpg___objects.json".format(image_id))
+
+    anndata = []
+    if os.path.isfile(annpath):
+        anndata = json.load(open(annpath))
+       
     with open(annpath, "w+") as annfile:
-        annfile.write(anndata)
+        anndata.extend(instances)
+        annfile.write(json.dumps(anndata))
