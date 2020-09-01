@@ -7,7 +7,6 @@ from detectron2.utils.comm import get_world_size
 
 from .utils.loader import build_test_loader
 from .utils.sa_utils import sa_setup_project_dir, sa_write_status_lists, sa_format_annotations
-from .utils.tensor_aug import add_salt_and_pepper, gaussian_blur, change_contrast
 
 from torch.nn import functional as F
 import numpy as np
