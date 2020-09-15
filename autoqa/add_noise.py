@@ -41,7 +41,7 @@ def bias_pascal_voc(
         instances = tree.findall("object")
         num_instances = len(instances)
         bias_stats['total'] += num_instances
-
+       
         if filename in biased_files:
             mislabel_ratio = round(num_instances*0.7)
             np.random.shuffle(instances)
@@ -56,16 +56,13 @@ def bias_pascal_voc(
                     mislabel_attr.text = '1'
                     bias_stats['mislabeled'] += 1
                 else:
-                    skipped_attr = ET.SubElement(instance, "skipped")
-                    skipped_attr.text = '1'
+                    tree.getroot().remove(instance)
                     bias_stats['skipped'] +=1
                   
             tree.write(anno_file)
 
 
     return bias_stats
-
-
 
 
 

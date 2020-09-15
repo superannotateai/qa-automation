@@ -6,7 +6,10 @@ from fvcore.common.file_io import PathManager
 
 from detectron2.data import DatasetCatalog, MetadataCatalog
 from detectron2.structures import BoxMode
-
+from detectron2.config import get_cfg
+from detectron2 import model_zoo
+from detectron2.engine import DefaultTrainer
+from detectron2.evaluation import PascalVOCDetectionEvaluator
 
 __all__ = ["load_noisy_voc_instances", "register_pascal_voc"]
 
@@ -67,12 +70,6 @@ def load_noisy_voc_instances(
             if mislabeled is not None:
                 isMislabeled = True
 
-            
-            skipped = obj.find("skipped")
-            
-            if skipped is not None:
-                continue
-
            
             # We include "difficult" samples in training.
             # Based on limited experiments, they don't hurt accuracy.
@@ -104,7 +101,7 @@ def load_noisy_voc_instances(
     return dicts
 
 
-def register_pascal_voc(name, dirname, split, year, class_names=CLASS_NAMES):
+def register_pascal_voc(name, dirname, split, year = 2007, class_names=CLASS_NAMES):
     DatasetCatalog.register(
         name, lambda: load_noisy_voc_instances(dirname, split, class_names)
     )
@@ -114,3 +111,77 @@ def register_pascal_voc(name, dirname, split, year, class_names=CLASS_NAMES):
         year=year,
         split=split
     )
+
+
+def split_pascal_voc(voc_root):
+    splits = ["PART1", "PART2"]
+    
+    fileids = np.array([filename.split(".")[0] for filename in os.listdir(os.path.join(voc_root, "Annotations"))])
+    np.random.shuffle(fileids)
+
+    split_bar = round(len(fileids)/2)
+    first_half = os.path.join(voc_root, "ImageSets", "Main", "{}.txt".format(splits[0]))
+    np.savetxt(first_half, fileids[:split_bar], delimiter=" ", fmt="%s" )
+    second_half = os.path.join(voc_root, "ImageSets", "Main", "{}.txt".format(splits[1]))
+    np.savetxt(second_half, fileids[split_bar:], delimiter=" ", fmt="%s")
+
+class PascalVOCTrainer(DefaultTrainer):
+    """
+    We use the "DefaultTrainer" which contains pre-defined default logic for
+    standard training workflow.
+    """
+
+    @classmethod
+    def build_evaluator(cls, cfg, dataset_name, output_folder=None):
+        """
+        Create VOC evaluator(s) for a given dataset.
+        """
+        return PascalVOCDetectionEvaluator(dataset_name)
+      
+
+def train_fastrcnn_on_pascal_voc_split(train_dataset_name, test_dataset_name, batch_size, num_iter, output_dir = "."):
+    #setup cfg
+    cfg = get_cfg()
+    cfg.merge_from_file(model_zoo.get_config_file("PascalVOC-Detection/faster_rcnn_R_50_FPN.yaml"))
+    cfg.DATASETS.TRAIN= (train_dataset_name, )
+    cfg.DATASETS.TEST= (test_dataset_name, )
+   
+    cfg.SOLVER.IMS_PER_BATCH = batch_size
+    cfg.SOLVER.MAX_ITER = num_iter 
+    cfg.SOLVER.STEPS = [round(num_iter * 3/4), ]
+    
+    cfg.OUTPUT_DIR = os.path.join(output_dir, "OUTPUT_{}".format(train_dataset_name))
+    os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
+
+    #set training
+    trainer = PascalVOCTrainer(cfg)
+    trainer.resume_or_load(resume=False)
+    trainer.train()
+
+    return cfg
+
+def train_fastrcnn_on_pascal_voc(voc_root, batch_size, num_iter, output_dir = "."):
+    
+    #split voc into two parts
+    splits = ["PART1", "PART2"]
+    split_pascal_voc(voc_root)
+
+    #register splits and define configs 
+    part1_dataset_name = "VOC2007_{}".format(splits[0])
+    register_pascal_voc(part1_dataset_name, voc_root, splits[0])
+    part2_dataset_name = "VOC2007_{}".format(splits[1])
+    register_pascal_voc(part2_dataset_name, voc_root, splits[1])
+
+    #set fastrcnn training
+    cfg1 = train_fastrcnn_on_pascal_voc_split(part1_dataset_name, part2_dataset_name, batch_size, num_iter)
+    cfg2 = train_fastrcnn_on_pascal_voc_split(part2_dataset_name, part1_dataset_name, batch_size, num_iter)
+    
+    return [cfg1, cfg2]
+
+
+
+
+
+
+
+
