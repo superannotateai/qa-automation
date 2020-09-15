@@ -62,8 +62,10 @@ Detected risky annotations can be imported to the SuperAnnotate platform via Sup
 ```python
 import superannotate as sa
 
-sa.upload_annotations_from_folder_to_project(sa_project, os.path.join("mislabeled_annotations"))
-sa.upload_annotations_from_folder_to_project(sa_project, os.path.join("missing_annotations"))
+sa_project = sa.search_projects(project_name)[0]
+
+sa.upload_annotations_from_folder_to_project(sa_project, mislabeled_annotations_root)
+sa.upload_annotations_from_folder_to_project(sa_project, missing_annotations_root)
 
 ```
 ![SDKUpload](figures/sdk_upload.png)
