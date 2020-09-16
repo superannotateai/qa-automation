@@ -139,7 +139,7 @@ class PascalVOCTrainer(DefaultTrainer):
         return PascalVOCDetectionEvaluator(dataset_name)
       
 
-def train_fastrcnn_on_pascal_voc_split(train_dataset_name, test_dataset_name, batch_size, num_iter, output_dir = "."):
+def train_fastrcnn_on_noisy_data_split(train_dataset_name, test_dataset_name, batch_size, num_iter, output_dir = "."):
     #setup cfg
     cfg = get_cfg()
     cfg.merge_from_file(model_zoo.get_config_file("PascalVOC-Detection/faster_rcnn_R_50_FPN.yaml"))
@@ -160,21 +160,21 @@ def train_fastrcnn_on_pascal_voc_split(train_dataset_name, test_dataset_name, ba
 
     return cfg
 
-def train_fastrcnn_on_pascal_voc(voc_root, batch_size, num_iter, output_dir = "."):
+def train_fastrcnn_on_noisy_dataset(dataset_root, batch_size, num_iter, output_dir = "."):
     
     #split voc into two parts
     splits = ["PART1", "PART2"]
-    split_pascal_voc(voc_root)
+    split_pascal_voc(dataset_root)
 
     #register splits and define configs 
     part1_dataset_name = "VOC2007_{}".format(splits[0])
-    register_pascal_voc(part1_dataset_name, voc_root, splits[0])
+    register_pascal_voc(part1_dataset_name, dataset_root, splits[0])
     part2_dataset_name = "VOC2007_{}".format(splits[1])
-    register_pascal_voc(part2_dataset_name, voc_root, splits[1])
+    register_pascal_voc(part2_dataset_name, dataset_root, splits[1])
 
     #set fastrcnn training
-    cfg1 = train_fastrcnn_on_pascal_voc_split(part1_dataset_name, part2_dataset_name, batch_size, num_iter)
-    cfg2 = train_fastrcnn_on_pascal_voc_split(part2_dataset_name, part1_dataset_name, batch_size, num_iter)
+    cfg1 = train_fastrcnn_on_noisy_data_split(part1_dataset_name, part2_dataset_name, batch_size, num_iter)
+    cfg2 = train_fastrcnn_on_noisy_data_split(part2_dataset_name, part1_dataset_name, batch_size, num_iter)
     
     return [cfg1, cfg2]
 
